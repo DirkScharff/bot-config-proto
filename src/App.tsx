@@ -1,49 +1,70 @@
 import './App.css';
 import { useEffect, useState } from 'react';
 import { Circle, Group, Layer, Line, Rect, Stage } from 'react-konva';
-import { atom, atomFamily, selectorFamily, useRecoilBridgeAcrossReactRoots_UNSTABLE, useRecoilCallback, useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
+import { atom, atomFamily, RecoilState, selectorFamily, SerializableParam, useRecoilBridgeAcrossReactRoots_UNSTABLE, useRecoilCallback, useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import _ from "lodash"
 import "@elastic/eui/dist/eui_theme_dark.css"
 import { EuiButton, EuiFlexGroup, EuiFlexItem, EuiProvider } from '@elastic/eui';
 
 import {v4 as uuid4} from "uuid"
+import { TupleType } from 'typescript';
+import { number } from 'prop-types';
 
 const elements = atom({
   key: "canvas-elements",
   default: []
 })
 
-const connections = atom({
+type ID = string
+type Mode = "in" | "out"
+
+interface IPortID 
+{
+  id:ID,
+  name: string,
+}
+
+interface IPort extends IPortID {
+  mode: Mode,
+  types: any[]
+}
+
+type IConnection = [source:IPort, target:IPort]
+
+const connections = atom<IConnection[]>({
   key: "connections", 
-  default: []
+  default: [] 
 })
 
-const connector_positions = atomFamily({
+interface RelPos {dx:number, dy:number}
+
+const connector_positions = atomFamily<RelPos, Readonly<IPortID>>({
   key: 'connector_positions',
-  default: {x:0, y:0},
+  default: {dx:0, dy:0},
 });
 
-const positions = atomFamily({
+interface Pos {x:number, y:number}
+const positions = atomFamily<Pos,ID>({
   key: "canvas-pos",
   default: {x:100, y:100}
 })
 
-const connection_start = atom({
+const connection_start = atom<IPort>({
   key: "connection-start",
   default: undefined
 })
 
-const hoveredID = atom({
+const hoveredID = atom<ID>({
   key: "hovered",
   default: undefined
 })
 
-const hoverables = atomFamily({
+const hoverables = atomFamily<Boolean, ID>({
   key: "hoverables",
   default: false
 })
 
-const hoverable = selectorFamily({
+const hoverable = selectorFamily<Boolean, any>({
   key: "hoverable",
   get: id => ({get}) => get(hoverables(id)),
   set: id => ({get, set}, val) => {
@@ -68,12 +89,12 @@ const useHoverable = ({id, name})=>{
   return [hovered, handlers]
 }
 
-const useConnectible = ({id, name, mode, types}) => {
+const useConnectible = ({id, name, mode, types} : IPort) => {
     const [hovered, hoverHandlers] = useHoverable({id, name})
     const start = useSetRecoilState(connection_start)
     const addConnection = useRecoilCallback(({snapshot, set}) => ({id, name, mode, types}) => {
-      const start=snapshot.getLoadable(connection_start).contents
-      set(connections, cs => [...cs, [start, {id, name, mode, types}]])
+      const s =snapshot.getLoadable(connection_start).contents as IPort
+      set(connections, cs => [...cs, [s, {id, name, mode, types}] as IConnection])
     })
     const handlers = {
       onMouseDown: () => {start({id, name, mode, types})},
@@ -87,11 +108,11 @@ const useConnectible = ({id, name, mode, types}) => {
 const Connector = ({id, name, mode, types=[], dx,dy, ...props}) => {
   const [hovered, handlers] = useConnectible({id, name, mode, types})
   const {x,y} = useRecoilValue(positions(id))
-  const set_positon = useSetRecoilState(connector_positions({id, name, mode}))
+  const set_positon = useSetRecoilState(connector_positions({id, name}))
 
   useEffect(()=>{
-    set_positon({x:x+dx,y:y+dy}) //TODO: Better just save dx, dy in recoil and have connection calculate the position
-  },[x,y,dx,dy, set_positon])
+    set_positon({dx,dy}) 
+  },[dx,dy, set_positon])
 
   return <Circle {...props} {...handlers} x={x+dx} y={y+dy}
     fill={hovered?"black":"white"}
@@ -107,23 +128,25 @@ const Node = ({id}) => {
     <Rect x={x} y={y} width={200} height={100} cornerRadius={5} stroke="black" fill='white' 
     onMouseDown={e => {setDragroot({x:e.evt.clientX-x, y:e.evt.clientY-y})}}
     onMouseMove={e => {if (dragroot){setXY({x: e.evt.clientX - dragroot.x, y:e.evt.clientY-dragroot.y})}}}
-    onMouseUp = {e=> setDragroot(undefined)}
-    onMouseLeave= {e=> setDragroot(undefined)}
+    onMouseUp = {_e=> setDragroot(undefined)}
+    onMouseLeave= {_e=> setDragroot(undefined)}
     />
 
-    <Connector id={id} name="a" dx={0} dy={50} radius={5} stroke="black" fill='white'></Connector>
-    <Connector id={id} name="b" dx={200} dy={50} radius={5} stroke="black" fill='white'></Connector>
+    <Connector id={id} name="a" mode="in" dx={0} dy={50} radius={5} stroke="black" fill='white'></Connector>
+    <Connector id={id} name="b" mode="out" dx={200} dy={50} radius={5} stroke="black" fill='white'></Connector>
   </Group>
 }
 
-const Connection = ({start, end}) => {
-  const st = _.omit(start, "types")
-  const en = _.omit(end, "types")
+const Connection = ({start, end} : {start:IPort, end:IPort}) => {
+  const st = useRecoilValue(positions(start.id))
+  const en = useRecoilValue(positions(end.id))
+  const st_rel = useRecoilValue(connector_positions({id:start.id, name:start.name}))
+  const en_rel = useRecoilValue(connector_positions({id:end.id, name:end.name}))
+  
+  const pstart = [st.x+st_rel.dx, st.y+st_rel.dy]
+  const pend = [en.x+en_rel.dx, en.y+en_rel.dy]
 
-  const st_pos = useRecoilValue(connector_positions(st))
-  const en_pos = useRecoilValue(connector_positions(en))
-
-  return <Line points={[st_pos.x, st_pos.y, en_pos.x, en_pos.y]} stroke="black"/>
+  return <Line points={[...pstart, ...pend]} stroke="black"/>
 }
 
 const Connections = () => {
